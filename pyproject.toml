@@ -4,9 +4,17 @@ version = "0.1.0"
 description = ""
 authors = ["William Tang <wjt40398@gmail.com>"]
 readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.12"
+loguru = "^0.7.3"
+pydantic = "^2.10.6"
+playwright = "^1.49.1"
+openai = "^1.60.1"
+pytest = "^8.3.4"
+beautifulsoup4 = "^4.12.3"
+html2text = "^2024.2.26"
 
 
 [build-system]
