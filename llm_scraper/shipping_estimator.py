@@ -1,7 +1,9 @@
 import re
-from asyncio import sleep
+from asyncio import sleep, timeout
 
 from playwright.async_api import Locator, Page, expect
+
+from util.decorators import ignore_timeout
 
 
 class UserInformation:
@@ -21,10 +23,17 @@ class UserInformation:
 # Take a screenshot and save it to a file
 # page.screenshot(path="snapshot.png")
 class ShippingEstimator:
-    def __init__(self, page: Page):
+    def __init__(
+        self,
+        page: Page,
+        default_fill_timeout: int = 100,
+        default_click_timeout=3000,
+    ):
         self.page = page
+        self.default_fill_timeout = default_fill_timeout
+        self.default_click_timeout = default_click_timeout
 
-    async def add_to_cart(self, quantity: int = 3) -> None:
+    async def add_to_cart(self, quantity: int = 2) -> None:
 
         if quantity > 1:
             # quantity can be a spinbutton
@@ -34,28 +43,37 @@ class ShippingEstimator:
                 name=re.compile(r"\b(qty|quantity)", re.IGNORECASE),
             ).all()
             if spin_button:
-                await spin_button[0].fill(str(quantity))
+                await spin_button[0].fill(
+                    str(quantity), timeout=self.default_fill_timeout
+                )
 
             textbox = await self.page.get_by_role(
                 "textbox", name=re.compile(r"\b(qty|quantity)", re.IGNORECASE)
             ).all()
             if textbox:
-                await textbox[0].fill(str(quantity))
+                await textbox[0].fill(str(quantity), timeout=self.default_fill_timeout)
 
-            locator = await (
-                self.page.locator("div")
-                .filter(has_not_text=re.compile(r"\brelated products", re.IGNORECASE))
-                .filter(has_text=re.compile(r"\b(qty|quantity)", re.IGNORECASE))
-                .get_by_role(
-                    "button", name=re.compile(r"\b(cart|add to cart)", re.IGNORECASE)
-                )
-                .all()
+        locator = await (
+            self.page.locator("div")
+            .filter(has_not_text=re.compile(r"\brelated products", re.IGNORECASE))
+            .filter(has_text=re.compile(r"\b(qty|quantity)", re.IGNORECASE))
+            .get_by_role(
+                "button", name=re.compile(r"\b(cart|add to cart)", re.IGNORECASE)
             )
-            if locator:
-                await locator[0].click()
-        # await self.page.get_by_role(
-        #     "button", name=re.compile(r"\b(cart|add to cart)", re.IGNORECASE)
-        # ).click()
+            .all()
+        )
+        if locator:
+            await locator[0].click(force=True)
+
+        # try:
+        #     add_to_cart_button = await self.page.get_by_role(
+        #         "button", name=re.compile(r"\b(add to cart)", re.IGNORECASE)
+        #     ).all()
+        #     if add_to_cart_button:
+        #         await expect(add_to_cart_button[0]).to_be_focused()
+        #         await add_to_cart_button[0].click()
+        # except:
+        #     pass
 
     async def handler(self, locator: Locator):
         await locator.click()
@@ -67,7 +85,7 @@ class ShippingEstimator:
         pass
 
     async def assert_shipping_quote(self) -> bool:
-        await sleep(1)
+        await sleep(0.5)
         e = await self.page.get_by_role(
             "textbox", name=re.compile(r"\b(postal|zip)", re.IGNORECASE)
         ).all()
@@ -88,133 +106,208 @@ class ShippingEstimator:
 
         await self.page.get_by_role("link").get_by_text("checkout").first.click()
 
+    @ignore_timeout
     async def fill_email_label(self, user: UserInformation) -> None:
         # there are some weird sites with an email label instead of textbox
-        email_label = await self.page.get_by_label("email").all()
-        if email_label:
-            await email_label[0].fill(user.email)
+        try:
+            email_label = await self.page.get_by_label("email").all()
+
+            if email_label:
+                await expect(email_label[0]).to_be_visible(
+                    timeout=self.default_fill_timeout
+                )
+                await email_label[0].fill(user.email, timeout=self.default_fill_timeout)
+        except AssertionError:
+            pass
 
         # Email should be filled first. Other form fields might not show if
         # no email is given
-        await sleep(2)
         for locator in await self.page.get_by_role(
-            "textbox", name=re.compile(r"\b(email)", re.IGNORECASE)
+            "textbox", name=re.compile(r"(email)", re.IGNORECASE)
         ).all():
-            await locator.fill(user.email)
+            try:
+                await expect(locator).to_be_visible(timeout=self.default_fill_timeout)
+                await locator.fill(user.email, timeout=self.default_fill_timeout)
+            except AssertionError:
+                continue
 
         # there might exist a continue button
         # 'continue shopping' should be avoided however
 
         continue_button = await self.page.get_by_role(
             "button",
-            name=re.compile(r"\b(continue|next)\b(?!\s+shopping)", re.IGNORECASE),
+            # TODO:
+            name=re.compile(r"(continue|next)(?!\s+shopping)", re.IGNORECASE),
         ).all()
 
         if continue_button:
-            await continue_button[0].click()
+            await continue_button[0].click(timeout=self.default_click_timeout)
 
+    @ignore_timeout
+    async def click_option_state(self, user: UserInformation) -> None:
+
+        # in the case that the combobox is a
+        # separate element from the combobox element
+        # or if select_option is not available due
+        # to lack of <select>
+
+        try:
+            province_combobox = await self.page.get_by_role(
+                "combobox",
+                name=re.compile(r"(province)", re.IGNORECASE),
+            ).all()
+            for combobox in province_combobox:
+                await combobox.click(timeout=100)
+            option = await self.page.get_by_role(
+                "option", name=re.compile(rf"({user.state})", re.IGNORECASE)
+            ).all()
+            if option:
+                tag = await option[0].evaluate("el => el.tagName")
+                if tag != "SELECT":
+                    await option[0].click(timeout=self.default_fill_timeout)
+        except Exception:
+            pass
+
+    @ignore_timeout
+    async def fill_full_name(self, user: UserInformation) -> None:
+        try:
+            # First Name
+            for locator in await self.page.get_by_role(
+                "textbox", name="first name"
+            ).all():
+                await locator.fill(user.first_name, timeout=self.default_fill_timeout)
+
+            # Last Name
+            for locator in await self.page.get_by_role(
+                "textbox", name="last name"
+            ).all():
+                await locator.fill(user.last_name, timeout=self.default_fill_timeout)
+        except Exception:
+            pass
+
+    @ignore_timeout
+    async def fill_state_combobox(self, user: UserInformation) -> None:
+        # TODO:
+        # sometimes, the province does not have a textbox and must be clicked
+
+        await self.page.get_by_role(
+            "combobox", name=re.compile(r"(province)", re.IGNORECASE)
+        ).click(timeout=self.default_click_timeout)
+        await sleep(1)
+        await self.page.get_by_role(
+            "combobox", name=re.compile(rf"({user.state})", re.IGNORECASE)
+        ).and_(self.page.get_by_role("textbox")).fill(
+            "Ontario", timeout=self.default_click_timeout
+        )
+
+    @ignore_timeout
+    async def fill_zip(self, user: UserInformation) -> None:
+        # Zip code
+        for locator in await self.page.get_by_role(
+            "textbox", name=re.compile(r"(postal|zip)", re.IGNORECASE)
+        ).all():  # use _or to fill also postal
+            await locator.fill(user.zip_code, timeout=self.default_fill_timeout)
+
+    @ignore_timeout
+    async def fill_city(self, user: UserInformation) -> None:
+        # City
+        for locator in await self.page.get_by_role(
+            "textbox", name=re.compile(r"(town|city)", re.IGNORECASE)
+        ).all():
+            await locator.fill(user.city, timeout=self.default_fill_timeout)
+
+    @ignore_timeout
     async def fill_shipping_address(self, user: UserInformation) -> None:
+        # Street address
+        for locator in await self.page.get_by_role(
+            "textbox",
+            name=re.compile(r"(?<!(email ))(address)", re.IGNORECASE),
+        ).all():
+            await locator.fill(user.address, timeout=self.default_fill_timeout)
+
+    @ignore_timeout
+    async def fill_phone_number(self, user: UserInformation) -> None:
+        # Phone number
+        for locator in await self.page.get_by_role(
+            "textbox", name=re.compile(r"(phone|mobile)", re.IGNORECASE)
+        ).all():
+            await locator.fill(user.phone, timeout=self.default_fill_timeout)
+
+    @ignore_timeout
+    async def fill_firearms_license(self, user: UserInformation) -> None:
+        # firearms license
+        for locator in await self.page.get_by_role(
+            "textbox", name=re.compile(r"(firearms|license)", re.IGNORECASE)
+        ).all():
+            await locator.fill(user.firearms_license, timeout=self.default_fill_timeout)
+
+    @ignore_timeout
+    async def fill_dob(self, user: UserInformation) -> None:
+        # date of birth
+        # TODO: some websites disable textbox and only allow datepicker...
+        for locator in await self.page.get_by_role(
+            "textbox",
+            name=re.compile(r"(age|date of birth|yyyy-mm-dd)", re.IGNORECASE),
+        ).all():
+            try:
+                # most likely a datepicker if not editable
+                await expect(locator).to_be_editable(timeout=self.default_fill_timeout)
+                await locator.fill(user.dob, timeout=self.default_fill_timeout)
+            except AssertionError:
+                continue
+
+    @ignore_timeout
+    async def select_option_state(self, user: UserInformation) -> None:
+        for locator in await self.page.get_by_label(
+            re.compile(r"(state|province)", re.IGNORECASE)
+        ).all():
+            try:
+                tag = await locator.evaluate("el => el.tagName")
+                if tag == "SELECT":
+                    await locator.select_option(
+                        # TODO: enum
+                        ["ontario", "ON", "on", "Ontario"],
+                        timeout=self.default_click_timeout,
+                    )
+                    return
+            except Exception:
+                pass
+
+    async def click_quote_shipping(self) -> None:
+        quote_button = await self.page.get_by_role(
+            "button", name=re.compile(r"(estimate|quote)", re.IGNORECASE)
+        ).all()
+        if quote_button:
+            await quote_button[0].click(timeout=self.default_fill_timeout)
+
+    async def fill_user_information(self, user: UserInformation) -> None:
         # There can be multiple elements with the same name corresponding to
         # a billing and shipping address. we should fill all locators
         # All fields are case insensitive, unless exact is set to true
 
-        await sleep(2)
-        # First Name
-        for locator in await self.page.get_by_role("textbox", name="first name").all():
-            await locator.fill(user.first_name)
+        # express checkout
+        # captchas...
+        # age verifier
+        # required account before shipping is estimated
+        # some may require email to be filled first
+        # include country which can also be a combobox
+        await self.fill_full_name(user)
 
-        # Last Name
-        for locator in await self.page.get_by_role("textbox", name="last name").all():
-            await locator.fill(user.last_name)
+        await self.fill_phone_number(user)
+        await self.fill_shipping_address(user)
+        await self.fill_city(user)
+        await self.fill_zip(user)
 
-        # Phone number
-        for locator in await self.page.get_by_role(
-            "textbox", name=re.compile(r"\b(phone|mobile)", re.IGNORECASE)
-        ).all():
-            await locator.fill(user.phone)
+        await self.fill_dob(user)
+        await self.fill_firearms_license(user)
 
-        # Street address
-        for locator in await self.page.get_by_role(
-            "textbox",
-            name=re.compile(r"\b(?!\s+shopping)\b(address)", re.IGNORECASE),
-        ).all():
-            await locator.fill(user.address)
-
-        # City/State
-        for locator in await self.page.get_by_role(
-            "textbox", name=re.compile(r"\b(town|city)", re.IGNORECASE)
-        ).all():
-            await locator.fill(user.city)
-
-        # Zip code
-        for locator in await self.page.get_by_role(
-            "textbox", name=re.compile(r"\b(postal|zip)", re.IGNORECASE)
-        ).all():  # use _or to fill also postal
-            await locator.fill(user.zip_code)
-
-        # firearms license
-        for locator in await self.page.get_by_role(
-            "textbox", name=re.compile(r"\b(firearms|license)", re.IGNORECASE)
-        ).all():  # use _or to fill also postal
-            await locator.fill(user.firearms_license)
-
-            # date of birth
-            # TODO: some websites disable textbox and only allow datepicker...
-            for locator in await self.page.get_by_role(
-                "textbox",
-                name=re.compile(r"\b(age|date of birth|yyyy-mm-dd)", re.IGNORECASE),
-            ).all():
-                # most likely a datepicker
-                try:
-                    await expect(locator).not_to_have_attribute(
-                        name="readonly", value=re.compile(r".*")
-                    )
-                    await locator.fill(user.dob)
-                except Exception:
-                    continue
-
-        # sometimes, the province does not have a textbox and must be clicked
-        # only click if combobox
-
-        province_combobox = await self.page.get_by_role(
-            "combobox",
-            name=re.compile(r"\b(province)", re.IGNORECASE),
-        ).all()
-
-        for combobox in province_combobox:
-            await combobox.click()
-            await sleep(1)
-            # option = await self.page.get_by_role(
-            #     "option", name=re.compile(rf"\b({user.state})", re.IGNORECASE)
-            # ).all()
-            # if option:
-            #     await option[0].click()
-
-            label = await self.page.get_by_label("province").all()
-            if label:
-                await self.page.get_by_label("province").select_option(user.state)
-            await combobox.click()
-
-        # use the combobox to select the province
-
-        # click if needed to get shipping quote
-
-        quote_button = await self.page.get_by_role(
-            "button", name=re.compile(r"\b(estimate|quote)", re.IGNORECASE)
-        ).all()
-        if quote_button:
-            await quote_button[0].click()
-
-    # express checkout
-    # captchas...
-    # age verifier
-    # required account before shipping is estimated
-    # some may require email to be filled first
-    # include country which can also be a combobox
+        await self.select_option_state(user)
+        await self.click_option_state(user)
 
     async def run(self, url: str, user: UserInformation) -> None:
 
-        await self.page.goto(url)
+        # wait_until="domcontentloaded" will not wait on slow loading images
+        await self.page.goto(url, wait_until="domcontentloaded")
 
         await self.add_to_cart()
         # await page.add_locator_handler(
@@ -226,6 +319,12 @@ class ShippingEstimator:
             await self.checkout()
 
         # .all is finicky. wait until all fields load before filling
-        await sleep(1)
+        # TODO: sleep isn't robust, use web assertions
+        await sleep(2)
+        await self.page.wait_for_load_state("load")
         await self.fill_email_label(user)
-        await self.fill_shipping_address(user)
+        await self.page.wait_for_load_state("load")
+        await sleep(1)
+        await self.fill_user_information(user)
+        await self.click_quote_shipping()
+        await self.page.wait_for_load_state("domcontentloaded")

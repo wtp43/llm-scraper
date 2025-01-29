@@ -1,3 +1,4 @@
+import asyncio
 from timeit import default_timer
 
 from loguru import logger
@@ -11,6 +12,7 @@ def timeit(func):
         total_time = end_time - start_time
 
         # logger.info(f"Function {func.__name__}{args} - [{kwargs}]: {total_time:.4f}s")
+        #
         logger.info(f"Function {func.__name__}]: {total_time:.4f}s")
         return result
 
@@ -37,6 +39,16 @@ def debug(func):
         return func(*args, **kwargs)
 
     return debug_wrapper
+
+
+def ignore_timeout(f):
+    async def wrapper(*arg, **kwargs):
+        try:
+            await f(*arg, **kwargs)
+        except Exception as e:
+            print("Ignoring timeout:", e)
+
+    return wrapper
 
 
 # def save_file(self, path, response):

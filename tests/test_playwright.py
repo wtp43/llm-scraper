@@ -3,7 +3,7 @@ import re
 from asyncio import sleep
 
 import pytest
-from playwright.async_api import Browser, async_playwright, expect
+from playwright.async_api import Browser, Page, async_playwright, expect
 
 from llm_scraper.shipping_estimator import ShippingEstimator, UserInformation
 
@@ -56,12 +56,18 @@ def user_ca():
 async def browser():
     async with async_playwright() as playwright:
         chromium = playwright.chromium
+
         browser = await chromium.launch(headless=False)
         yield browser
 
 
 @pytest.mark.asyncio(loop_scope="session")
 class TestShippingEstimator:
+    async def assert_shipping_provider(self, page: Page) -> AssertionError:
+        locator = page.locator("body")
+        return await expect(locator).to_contain_text(
+            re.compile(r"\b(fedex|ups)", re.IGNORECASE)
+        )
 
     async def test_quote_on_cart_page_usa(
         self,
@@ -75,11 +81,7 @@ class TestShippingEstimator:
         shipping_estimator = ShippingEstimator(page)
         await shipping_estimator.run(url, user_usa)
 
-        await sleep(2)
-        locator = page.locator("body")
-        await expect(locator).to_contain_text(
-            re.compile(r"\b(fedex|ups)", re.IGNORECASE)
-        )
+        await self.assert_shipping_provider(page)
         await page.close()
 
     async def test_quote_on_checkout_page_ca(
@@ -87,16 +89,13 @@ class TestShippingEstimator:
         browser: Browser,
         user_ca: UserInformation,
     ):
+        # uses click_option_state
         url = "https://www.gotenda.com/product/cci-noise-blanks-22-short-box-of-100/"
         page = await browser.new_page()
         shipping_estimator = ShippingEstimator(page)
         await shipping_estimator.run(url, user_ca)
 
-        await sleep(2)
-        locator = page.locator("body")
-        await expect(locator).to_contain_text(
-            re.compile(r"\b(fedex|ups)", re.IGNORECASE)
-        )
+        await self.assert_shipping_provider(page)
         await page.close()
 
     async def test_checkout_page_ca(
@@ -104,15 +103,12 @@ class TestShippingEstimator:
         browser: Browser,
         user_ca: UserInformation,
     ):
+        # uses select_option_state
         url = "https://canadafirstammo.ca/federal-american-eagle-handgun-380-auto/"
 
         page = await browser.new_page()
         shipping_estimator = ShippingEstimator(page)
         await shipping_estimator.run(url, user_ca)
 
-        await sleep(20)
-        locator = page.locator("body")
-        await expect(locator).to_contain_text(
-            re.compile(r"\b(fedex|ups)", re.IGNORECASE)
-        )
+        await self.assert_shipping_provider(page)
         await page.close()
