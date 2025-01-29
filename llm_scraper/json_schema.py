@@ -20,7 +20,8 @@ class Quantity(BaseModel):
 
 
 class Price(BaseModel):
-    name: str = Field(description="The name of the ammo")
+    title: str = Field(description="The title of the ammo")
+    manufacturer: str
     current_price: float = Field(description="The price of the ammo")
     sale_price: float = Field(description="The discounted price of the ammo")
     price: float = Field(description="The price of the product")
