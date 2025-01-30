@@ -1,9 +1,9 @@
 import re
-from asyncio import sleep, timeout
+from asyncio import TaskGroup, sleep, timeout
 
 from playwright.async_api import Locator, Page, expect
 
-from util.decorators import ignore_timeout
+from util.decorators import ignore_timeout, timeit
 
 
 class UserInformation:
@@ -40,7 +40,7 @@ class ShippingEstimator:
 
             spin_button = await self.page.get_by_role(
                 "spinbutton",
-                name=re.compile(r"\b(qty|quantity)", re.IGNORECASE),
+                name=re.compile(r"\b(qty|quantity|stock)", re.IGNORECASE),
             ).all()
             if spin_button:
                 await spin_button[0].fill(
@@ -63,7 +63,8 @@ class ShippingEstimator:
             .all()
         )
         if locator:
-            await locator[0].click(force=True)
+            # await locator[0].click(force=True)
+            await locator[0].click()
 
         # try:
         #     add_to_cart_button = await self.page.get_by_role(
@@ -75,14 +76,15 @@ class ShippingEstimator:
         # except:
         #     pass
 
-    async def handler(self, locator: Locator):
-        await locator.click()
+    async def close_dialog_handler(self) -> None:
+        await self.page.get_by_role(
+            "button", name=re.compile(r"(close|dialog|cancel|exit|x)", re.IGNORECASE)
+        ).click(timeout=10000)
 
-    async def age_verification_handler(self, locator: Locator) -> None:
-        await locator.click()
-
-    async def email_login_handler(self, locator: Locator) -> None:
-        pass
+    async def age_verification_popup_handler(self) -> None:
+        await self.page.get_by_role(
+            "button", name=re.compile(r"(yes)", re.IGNORECASE)
+        ).click(timeout=10000)
 
     async def assert_shipping_quote(self) -> bool:
         await sleep(0.5)
@@ -273,6 +275,13 @@ class ShippingEstimator:
             except Exception:
                 pass
 
+    async def add_page_handler(self, element, handler) -> None:
+        await self.page.add_locator_handler(
+            element,
+            handler,
+            no_wait_after=True,
+        )
+
     async def click_quote_shipping(self) -> None:
         quote_button = await self.page.get_by_role(
             "button", name=re.compile(r"(estimate|quote)", re.IGNORECASE)
@@ -304,11 +313,56 @@ class ShippingEstimator:
         await self.select_option_state(user)
         await self.click_option_state(user)
 
+    async def init_handlers(self):
+        async with TaskGroup() as tg:
+            page_handler_tasks = []
+            page_handler_tasks.append(
+                tg.create_task(
+                    self.add_page_handler(
+                        self.page.get_by_text(
+                            re.compile(r"(emails|newsletter|sign up)", re.IGNORECASE)
+                        ),
+                        self.close_dialog_handler,
+                    ),
+                )
+            )
+
+            page_handler_tasks.append(
+                tg.create_task(
+                    self.add_page_handler(
+                        self.page.get_by_text(
+                            re.compile(
+                                r"(18).*(years)",
+                                re.IGNORECASE,
+                            )
+                        ),
+                        self.age_verification_popup_handler(),
+                    ),
+                )
+            )
+
+    async def go_to(self, url: str) -> None:
+        # wait_until="domcontentloaded" will not wait on slow loading images
+        # await self.init_handlers()
+        await self.page.goto(url, wait_until="load")
+        await self.page.add_locator_handler(
+            self.page.get_by_text(
+                re.compile(
+                    r"(verify)",
+                    re.IGNORECASE,
+                )
+            ),
+            self.age_verification_popup_handler,
+            no_wait_after=True,
+        )
+
+    @timeit
     async def run(self, url: str, user: UserInformation) -> None:
 
         # wait_until="domcontentloaded" will not wait on slow loading images
         await self.page.goto(url, wait_until="domcontentloaded")
 
+        await sleep(3)
         await self.add_to_cart()
         # await page.add_locator_handler(
         #     page.get_by_label("Close"), self.handler, times=1

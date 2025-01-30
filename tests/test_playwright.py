@@ -57,7 +57,7 @@ async def browser():
     async with async_playwright() as playwright:
         chromium = playwright.chromium
 
-        browser = await chromium.launch(headless=False)
+        browser = await chromium.launch(headless=False, args=["--disable-gpu"])
         yield browser
 
 
@@ -66,7 +66,7 @@ class TestShippingEstimator:
     async def assert_shipping_provider(self, page: Page) -> AssertionError:
         locator = page.locator("body")
         return await expect(locator).to_contain_text(
-            re.compile(r"\b(fedex|ups)", re.IGNORECASE)
+            re.compile(r"\b(fedex|ups)", re.IGNORECASE), timeout=10000
         )
 
     async def test_quote_on_cart_page_usa(
@@ -78,6 +78,7 @@ class TestShippingEstimator:
         url = "https://www.bulkammo.com/200-rounds-of-6-5-creedmoor-ammo-by-hornady-in-field-box-140gr-bthp"
 
         page = await browser.new_page()
+        await page.route("**/*.{gif,png,jpg,jpeg,svg}*", lambda route: route.abort())
         shipping_estimator = ShippingEstimator(page)
         await shipping_estimator.run(url, user_usa)
 
@@ -92,6 +93,7 @@ class TestShippingEstimator:
         # uses click_option_state
         url = "https://www.gotenda.com/product/cci-noise-blanks-22-short-box-of-100/"
         page = await browser.new_page()
+        await page.route("**/*.{gif,png,jpg,jpeg,svg}*", lambda route: route.abort())
         shipping_estimator = ShippingEstimator(page)
         await shipping_estimator.run(url, user_ca)
 
@@ -107,8 +109,80 @@ class TestShippingEstimator:
         url = "https://canadafirstammo.ca/federal-american-eagle-handgun-380-auto/"
 
         page = await browser.new_page()
+        await page.route("**/*.{gif,png,jpg,jpeg,svg}*", lambda route: route.abort())
         shipping_estimator = ShippingEstimator(page)
         await shipping_estimator.run(url, user_ca)
 
         await self.assert_shipping_provider(page)
+        await page.close()
+
+    async def test_select_product(self, browser: Browser, user_ca):
+        # https://www.targetsportsusa.com/cci-blazer-40-sw-ammo-165-grain-full-metal-jacket-aluminum-3589-p-702.aspx
+        # must pick case size before add button appears
+
+        url = "https://www.targetsportsusa.com/cci-blazer-40-sw-ammo-165-grain-full-metal-jacket-aluminum-3589-p-702.aspx"
+
+        page = await browser.new_page()
+        await page.route("**/*.{gif,png,jpg,jpeg,svg}*", lambda route: route.abort())
+        shipping_estimator = ShippingEstimator(page, default_fill_timeout=50000)
+        await shipping_estimator.run(url, user_ca)
+
+        await self.assert_shipping_provider(page)
+        await page.close()
+
+    async def test_close_email_popup(self, browser: Browser):
+        # https://www.targetsportsusa.com/cci-blazer-40-sw-ammo-165-grain-full-metal-jacket-aluminum-3589-p-702.aspx
+        # must pick case size before add button appears
+
+        url = "https://www.targetsportsusa.com/cci-blazer-40-sw-ammo-165-grain-full-metal-jacket-aluminum-3589-p-702.aspx"
+
+        page = await browser.new_page()
+        await page.route("**/*.{gif,png,jpg,jpeg,svg}", lambda route: route.abort())
+        shipping_estimator = ShippingEstimator(
+            page, default_fill_timeout=50000, default_click_timeout=50000
+        )
+        await shipping_estimator.go_to(url)
+
+        await sleep(10)
+        # await expect(page.locator("body")).not_to_contain_text(
+        #     re.compile(r"(emails)", re.IGNORECASE)
+        # )
+
+        await page.close()
+
+    async def test_verify_age_popup(self, browser: Browser):
+        url = "https://www.aeammo.com/products/winchester-wm193-wm193-75-5666"
+
+        page = await browser.new_page()
+        await page.route(
+            "**/*.@(gif|png|jpg|jpeg|svg|expiry|width|length)*",
+            lambda route: route.abort(),
+        )
+        shipping_estimator = ShippingEstimator(
+            page, default_fill_timeout=5000, default_click_timeout=5000
+        )
+        # await page.add_locator_handler(
+        #     page.get_by_label(
+        #         re.compile(
+        #             r"(verify)",
+        #             re.IGNORECASE,
+        #         )
+        #     ),
+        #     shipping_estimator.age_verification_popup_handler,
+        # )
+        await page.add_locator_handler(
+            page.get_by_label(
+                re.compile(
+                    r"(sign)",
+                    re.IGNORECASE,
+                )
+            ),
+            shipping_estimator.close_dialog_handler,
+            no_wait_after=True,
+        )
+        await shipping_estimator.go_to(url)
+        await shipping_estimator.add_to_cart(2)
+        await page.get_by_text(r"(18).*years.*old").select_text()
+        await page.pause()
+
         await page.close()
