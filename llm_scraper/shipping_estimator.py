@@ -32,6 +32,8 @@ class ShippingEstimator:
         self.page = page
         self.default_fill_timeout = default_fill_timeout
         self.default_click_timeout = default_click_timeout
+        self.shipping_quote_received = False
+        self.shipping_unavailable = False
 
     async def add_to_cart(self, quantity: int = 2) -> None:
 
@@ -53,18 +55,25 @@ class ShippingEstimator:
             if textbox:
                 await textbox[0].fill(str(quantity), timeout=self.default_fill_timeout)
 
-        locator = await (
+        # there might not exist a quantity component in which case
+        # the add to cart button should be pressed multiple times
+
+        locator = (
             self.page.locator("div")
-            .filter(has_not_text=re.compile(r"\brelated products", re.IGNORECASE))
-            .filter(has_text=re.compile(r"\b(qty|quantity)", re.IGNORECASE))
-            .get_by_role(
-                "button", name=re.compile(r"\b(cart|add to cart)", re.IGNORECASE)
-            )
-            .all()
+            .filter(has_not_text=re.compile(r"(related products)", re.IGNORECASE))
+            .filter(has_text=re.compile(r"(qty|quantity|stock)", re.IGNORECASE))
         )
-        if locator:
-            # await locator[0].click(force=True)
-            await locator[0].click()
+        add_to_cart_loc = await locator.get_by_role(
+            "button", name=re.compile(r"(cart|add to cart)", re.IGNORECASE)
+        ).all()
+        if add_to_cart_loc:
+            await add_to_cart_loc[0].click(timeout=self.default_click_timeout)
+
+        add_to_cart_loc = await locator.get_by_role(
+            "link", name=re.compile(r"(cart|add to cart)", re.IGNORECASE)
+        ).all()
+        if add_to_cart_loc:
+            await add_to_cart_loc[0].click(timeout=self.default_click_timeout)
 
         # try:
         #     add_to_cart_button = await self.page.get_by_role(
@@ -76,25 +85,39 @@ class ShippingEstimator:
         # except:
         #     pass
 
-    async def close_dialog_handler(self) -> None:
-        await self.page.get_by_role(
-            "button", name=re.compile(r"(close|dialog|cancel|exit|x)", re.IGNORECASE)
-        ).click(timeout=10000)
-
     async def age_verification_popup_handler(self) -> None:
         await self.page.get_by_role(
             "button", name=re.compile(r"(yes)", re.IGNORECASE)
         ).click(timeout=10000)
 
-    async def assert_shipping_quote(self) -> bool:
+    async def __assert_shipping_quote_component(self) -> bool:
         await sleep(0.5)
         e = await self.page.get_by_role(
-            "textbox", name=re.compile(r"\b(postal|zip)", re.IGNORECASE)
+            "textbox", name=re.compile(r"(postal|zip)", re.IGNORECASE)
         ).all()
         if e:
             return True
         else:
             return False
+
+    async def continue_as_guest(self) -> None:
+        guest_loc = await self.page.get_by_role(
+            "link", name=re.compile(r"(guest)", re.IGNORECASE)
+        ).all()
+        if guest_loc:
+            await guest_loc[0].click(timeout=self.default_click_timeout)
+
+    async def __click_locators_by_role(self, name, roles: list) -> None:
+        for r in roles:
+            locators = await self.page.get_by_role(r, name=name).all()
+            await self.__click_if_in_viewport(locators)
+
+    async def __click_locators_by_text(self, name) -> None:
+        locators = await self.page.get_by_text(name).all()
+        await self.__click_if_in_viewport(locators)
+
+    async def __on_checkout_page(self):
+        return re.match(r"(checkout|cart)", self.page.url)
 
     async def checkout(self) -> None:
         # could be iframe
@@ -103,10 +126,39 @@ class ShippingEstimator:
 
         # some shipping estimators happen before the payment page: check bulkammo.com
         # TODO: it might be easier to check for the existence of a shipping estimate instead
-        if re.match(r"\b(checkout|cart)", self.page.url):
+        if await self.__on_checkout_page():
             return
 
-        await self.page.get_by_role("link").get_by_text("checkout").first.click()
+        await self.__click_locators_by_role(
+            re.compile(r"(checkout)", re.IGNORECASE), ["link", "button", "text"]
+        )
+
+        if await self.__on_checkout_page():
+            return
+
+        await self.__click_locators_by_text(re.compile(r"(checkout)", re.IGNORECASE))
+
+        if await self.__on_checkout_page():
+            return
+        await self.continue_as_guest()
+
+    async def __click_if_in_viewport(self, locators: list[Locator]) -> None:
+        # only click buttons if all fields are filled in
+        textbox_locs = await self.page.get_by_role(
+            "textbox", name=re.compile(r".*")
+        ).all()
+        for loc in locators:
+            try:
+                for input in textbox_locs:
+                    await expect(input).not_to_be_in_viewport(timeout=200)
+                    await expect(input).not_to_be_empty()
+                await expect(loc).to_be_in_viewport(timeout=200)
+                await expect(loc).to_be_visible(timeout=200)
+                # await expect(loc).to_be_focused(timeout=30)
+
+                await loc.click(timeout=self.default_click_timeout)
+            except AssertionError:
+                continue
 
     @ignore_timeout
     async def fill_email_label(self, user: UserInformation) -> None:
@@ -313,38 +365,9 @@ class ShippingEstimator:
         await self.select_option_state(user)
         await self.click_option_state(user)
 
-    async def init_handlers(self):
-        async with TaskGroup() as tg:
-            page_handler_tasks = []
-            page_handler_tasks.append(
-                tg.create_task(
-                    self.add_page_handler(
-                        self.page.get_by_text(
-                            re.compile(r"(emails|newsletter|sign up)", re.IGNORECASE)
-                        ),
-                        self.close_dialog_handler,
-                    ),
-                )
-            )
-
-            page_handler_tasks.append(
-                tg.create_task(
-                    self.add_page_handler(
-                        self.page.get_by_text(
-                            re.compile(
-                                r"(18).*(years)",
-                                re.IGNORECASE,
-                            )
-                        ),
-                        self.age_verification_popup_handler(),
-                    ),
-                )
-            )
-
     async def go_to(self, url: str) -> None:
         # wait_until="domcontentloaded" will not wait on slow loading images
-        # await self.init_handlers()
-        await self.page.goto(url, wait_until="load")
+        await self.page.goto(url, wait_until="domcontentloaded")
         await self.page.add_locator_handler(
             self.page.get_by_text(
                 re.compile(
@@ -356,29 +379,38 @@ class ShippingEstimator:
             no_wait_after=True,
         )
 
+    async def click_delivery_option(self) -> None:
+        delivery_option = await self.page.get_by_role(
+            "button", name=re.compile(r"(express|delivery)", re.IGNORECASE)
+        ).all()
+        if delivery_option:
+            await delivery_option[0].click(timeout=self.default_click_timeout)
+
     @timeit
     async def run(self, url: str, user: UserInformation) -> None:
 
-        # wait_until="domcontentloaded" will not wait on slow loading images
         await self.page.goto(url, wait_until="domcontentloaded")
-
-        await sleep(3)
         await self.add_to_cart()
-        # await page.add_locator_handler(
-        #     page.get_by_label("Close"), self.handler, times=1
-        # )
 
-        # only checkout if shipping quote is not found yet
-        if not await self.assert_shipping_quote():
-            await self.checkout()
+        # to account for all possible orders of form inputs,
+        # loop all actions
+        while not self.shipping_quote_received:
 
-        # .all is finicky. wait until all fields load before filling
-        # TODO: sleep isn't robust, use web assertions
-        await sleep(2)
-        await self.page.wait_for_load_state("load")
-        await self.fill_email_label(user)
-        await self.page.wait_for_load_state("load")
-        await sleep(1)
-        await self.fill_user_information(user)
-        await self.click_quote_shipping()
-        await self.page.wait_for_load_state("domcontentloaded")
+            # wait_until="domcontentloaded" will not wait on slow loading images
+
+            # only go to checkout page if shipping quote component not found yet
+            if not await self.__assert_shipping_quote_component():
+                await self.checkout()
+
+            # .all is finicky. wait until all fields load before filling
+            # TODO: sleep isn't robust, use web assertions
+            await sleep(2)
+            await self.fill_email_label(user)
+            await sleep(1)
+            await self.fill_user_information(user)
+            await self.click_quote_shipping()
+            await self.page.wait_for_load_state("domcontentloaded")
+
+    # process shipping not available
+    # fill credit card
+    # agree with terms
